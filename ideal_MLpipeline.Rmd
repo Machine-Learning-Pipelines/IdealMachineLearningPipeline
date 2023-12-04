@@ -1,0 +1,702 @@
+---
+title: "An Ideal Pipeline"
+output:
+  html_document:
+    code_folding: show
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: no
+    theme: united
+  pdf_document:
+    toc: yes
+bibliography: ideal_pip_bib.bib
+link-citations: yes
+---
+
+# Step 0: Complete documentation
+
+# Step 1: ML research problem definition  
+
+### 1.1 Define the problems & goals.  
+To build classifiers for predicting human acute leukemia classes, only using gene expression data monitoring by DNA microarrays.  
+
+### 1.2 Ensure the problem solvable by ML.  
+Although we could not assess the original researchers’ experience in ML, we can work on the data aspect.  
+The @NationalCancerInstitute reported in 1999 (the year @Golub99 published this paper), the observed rate for leukemia was 12.5 per 100,000 people (that is, about 12,500 people). According to @Barlett2001, the minimum sample size (to get statistically meaningful result) for such population was 370.  
+
+### 1.3 Set evaluation metrics and success criteria.  
+Since this is a binary classification problem, one can also use the following metrics as needed: confusion matrix, specificity, recall(sensitivity), precision, and ROC-AUC curve. We used confusion matrices to visualize the details of misclassified cases.  
+
+@Salah2019 suggest that classifiers designed for this task should achieve at least 90% accuracy to be considered successful.   
+ 
+
+### 1.4 Hypotheses registration  
+We have registered the following three hypotheses in the project Github [repository](https://github.com/Machine-Learning-Pipelines/IdealMachineLearningPipeline) as an example:  
+
+1, Common binary classification algorithms can achieve high accuracy in this type of leukemia cancer classification problem (i.e., no need to create/invent an algorithm from scratch).  
+
+2, The original classifier selected 50 features (too many). Whether using Golub’s original classifier or other common binary classification algorithms, one may use fewer features (such as 10, or 6 features) to achieve similar model performances.  
+
+3, The most “informative” genes selected by Golub’s method, may not be the same as the important features selected by common binary classification algorithms, for example, the list of feature importance with random forest algorithms.   
+
+
+### 1.5 Ethical concerns
+First of all it should be noted that the data collected was medical data.  
+@Vayena_Blasimme_Cohen_2018 emphasized the usage of medical data should comply with privacy requirements and data protection. The Golub study should address questions regarding the above two aspects, as well as questions like the data anonymization process, the access to the data before anonymization, the regional data usage regulation, etc.  
+
+```{r S1, warning=FALSE, message=FALSE}
+# https://bioconductor.org/packages/release/data/experiment/html/golubEsets.html 
+#if (!require("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+
+#BiocManager::install("golubEsets")
+
+require(golubEsets)  # data
+
+require(rlang)  # hash
+require(factoextra)  # pca
+# model
+require(e1071)
+require(MASS)
+require(sparsediscrim)
+require(randomForest)
+```
+
+# Step 2: Input data  
+
+### 2.1 Collect appropriate data  
+In step 1, we recognized a faulty generalization and identified that the existing sample size was not enough. The next step is to check if more data from the same source is available (the same hospitals or institutes, where the samples
+were collected using the same method). If possible, increase the sample size to reach a minimum sample size of n = 370.  
+
+To avoid faulty generalization fallacy, one should check if similar data on other types of cancer is available, since acute leukemia is only one of many types of cancer. (None available)  
+
+Finally, depending on the nature of the problem and the data, check if common techniques to deal with a lack of data such as data augmentation, data generation/simulation, and data imputation are applicable in this case. (None applicable)  
+
+Apart from statistical heuristics, it is necessary to acknowledge that special cases may exist depending on the fields. According to domain experts’ experience, @Mukherjee2003 believed a “10-20 samples range” would be enough for such classification problems; @Dobbin2008 even claimed the Golub study had a “large” sample size.
+
+
+### 2.2 Load the data  
+We used the data from the R package **golubEsets** by @golubEsets for reproduction.  
+First, load the package and extract the (part of) data we need in R.  
+Then, check if the data format is suitable for subsequent processing (It is in matrix format).  
+Lastly, check if the data contents, dimensions, and data types are as expected.  
+
+```{r 2_2, warning=FALSE, message=FALSE}
+#data(Golub_Merge)
+data(Golub_Train)
+golub_train_p = t(Golub_Train@assayData[["exprs"]])
+golub_train_r =pData(Golub_Train)[, "ALL.AML"]
+
+#Testing data predictor
+data(Golub_Test)
+golub_test_p = t(Golub_Test@assayData[["exprs"]])
+golub_test_r = pData(Golub_Test)[, "ALL.AML"]
+
+#Show summary
+rbind(Train = dim(golub_train_p), Test = dim(golub_test_p))
+cbind(Train = table(golub_train_r),Test = table(golub_test_r))
+
+# combine covariates into a df
+df_cov = data.frame(Golub_Train$BM.PB, Golub_Train$T.B.cell, Golub_Train$FAB, Golub_Train$Date, Golub_Train$Gender, Golub_Train$pctBlasts, Golub_Train$Treatment)
+
+df_test_cov = data.frame(Golub_Test$BM.PB, Golub_Test$T.B.cell, Golub_Test$FAB, Golub_Test$Date, Golub_Test$Gender, Golub_Test$pctBlasts, Golub_Test$Treatment)
+```
+
+### 2.3 Preserve the data   
+We register the data by storing a snapshot of the cleaned and processed data (on Zenodo as an example, [id: 8123245](https://zenodo.org/record/8123245)).  
+
+Another failsafe is to save the hashes for the data file, this also ensures data integrity. Make sure to check if retrieval is successful after preservation.  
+
+```{r 2_3, warning=FALSE, message=FALSE}
+golub_training = cbind(golub_train_p, golub_train_r)
+save(golub_training, file = "./golub_orig_trainSet.rda")
+golub_hashes = hash_file("./golub_orig_trainSet.rda")
+golub_hashes
+```
+
+### 2.4 Exploratory data analysis  
+Besides gene data, we noticed another data set in the documentation of golubEsets package, which detailed the 11 covariates of the data samples. After preliminary check, we realized there was a severe missing data problem. Not a single data record was complete (there was always missing data for each sample). 9 out of the 11 covariates had missing values, ranging from 24% to 88%. Furthermore, the distributions of two categorical variables were not balanced between the training set and the test set; the later data set was collected at a different time [@Slonim2000].  
+This means, there was a representative bias in the gene data.  
+
+```{r 2_4_EDA_dataset2, warning=FALSE, message=FALSE}
+# any rows of the data that are fully observed?  
+which(rowSums(is.na(df_cov))==0)
+which(rowSums(is.na(df_test_cov))==0)
+
+rbind(Train = round(prop.table(table(Golub_Train$T.B.cell, useNA = "ifany")),3), Test = round(prop.table(table(Golub_Test$T.B.cell, useNA = "ifany")),3))
+
+rbind(Train = round(prop.table(table(Golub_Train$FAB, useNA = "ifany")),3), Test = round(prop.table(table(Golub_Test$FAB, useNA = "ifany")),3))
+
+rbind(Train = round(prop.table(table(Golub_Train$Gender, useNA = "ifany")),3), Test = round(prop.table(table(Golub_Test$Gender, useNA = "ifany")),3))
+
+rbind(Train = round(prop.table(table(Golub_Train$Treatment, useNA = "ifany")),3), Test = round(prop.table(table(Golub_Test$Treatment, useNA = "ifany")),3))
+
+# different categories
+round(prop.table(table(Golub_Train$pctBlasts, useNA = "ifany")),3) 
+round(prop.table(table(Golub_Test$pctBlasts, useNA = "ifany")),3)
+
+# these two variables don't have any NAs; could be used for re-distributing the train/test samples
+cbind(Train = table(Golub_Train$BM.PB), Test = table(Golub_Test$BM.PB))
+cbind(Train = table(Golub_Train$Source), Test = table(Golub_Test$Source))
+```
+
+
+### 2.5 Ensure representativeness and minimize biases  
+To avoid sampling bias, one method from a statistical perspective is stratified random sampling.  
+This ensures the distributions of categorical variables in the samples be roughly equal to those of the population. However, in Golub’s case, all ALL patients were children; all AML patients were adults. The test set had the same problem. Additionally, the test set also the problem of inconsistent data source: the 20 ALL cases were from childhood ALL patients at SJCRH & DFCI, but the 14 AML cases included 4 samples from adults and 10 from children at CALGB, SJCRH & CCG. There is nothing we can do now to fix this bias source.  
+ 
+However, we can improve the representativeness of the training data.  
+To address this type of representation bias due to missing categories (of covariates) in the training data [@Mehrabi2021], we moved 12 samples from the test set to the training set based on our exploratory analysis. These 12 samples belonged to categories (of covariates) unseen in the training data but present in the test set:  
+5 random peripheral blood samples (feature “BM.PB”);  
+3 random CCG samples and 4 random St-Jude samples (feature “Source”).  
+Other features had many NAs that made redistribution difficult and uncertain.  
+The new training set had 50 samples, and the new test set had 22 samples.  
+
+```{r 2_5, warning=FALSE, message=FALSE}
+# checked: the original sample numbers of the covariates = rownames of the large matrix (golub_train_p) 
+
+# Get idx for PB, CCG & St-J. 
+# Pick randomly; fix the seed 
+set.seed(135)
+PB_idx = sample(which(as.integer(Golub_Test$BM.PB)==2), 5)
+CCG_idx = sample(which(as.integer(Golub_Test$Source)==2),3)
+SJ_idx = sample(which(as.integer(Golub_Test$Source)==4),4)
+# merge the idx
+mv_idx = sort(c(PB_idx, CCG_idx, SJ_idx))
+length(unique(mv_idx))
+
+#New train & test
+golub_Ntrain_p = rbind(golub_train_p, golub_test_p[mv_idx,])
+golub_Ntrain_r = c(golub_train_r, golub_test_r[mv_idx])
+golub_Ntest_p = golub_test_p[-mv_idx,]
+golub_Ntest_r = golub_test_r[-mv_idx]
+
+#Show summary
+rbind(Train = dim(golub_Ntrain_p), Test = dim(golub_Ntest_p))
+cbind(Train = table(golub_Ntrain_r),Test = table(golub_Ntest_r))
+```
+
+# Step 3: Data Preparation  
+
+### 3.1 Data Preprocessing   
+Due to the severe incomplete documentation of data preprocessing in the Golub study, the steps below were
+summarized from a reproduced work by Robert Gentleman [@Gentleman_2005]. He received these details from communication with one of the authors, Pablo Tamayo.  
+
+Let X’s denote the expression level for a gene.
+
+1, Thresholding:  
+Set the floor of 100 and ceiling of 16,000 ($100 \leq X \leq 16000$). 
+
+2, Filtering:  
+Exclusion of non-informative genes with $max/min \leq 5$ or $(max-min) \leq 500$, where max and min refer to the maximum and minimum intensities for a particular gene across the 72 mRNA samples. 
+
+3, Log Transformation:  
+To reduce or remove the skewness of the gene data, apply log transformation. The math formula is $X_{log} = log_{10}(X)$.  
+
+4, Standardization:  
+The features had high variances, this step converted them to standardized data representations.  
+Use the mean and standard deviation in the training data to standardize the test data too. ($X_{norm} = \frac{X_{log} - mean(X_{log})}{SD(X_{log})}$)
+
+```{r S31, warning=FALSE, message=FALSE}
+
+golub_filter = function(x, r = 5, d=500){
+    minval = min(x)
+    maxval = max(x)
+    (maxval/minval>r)&&(maxval-minval>d)
+}
+
+# the idx / features for traing set *and test set*
+filter = apply(golub_Ntrain_p, 2, golub_filter)
+filter_idx = (1:ncol(golub_Ntrain_p))[filter]
+
+# standardize the test set using means & sd from training set.
+train_means = round(apply(golub_Ntrain_p, 2, mean),3)
+train_std_dev = round(apply(golub_Ntrain_p, 2, sd),3)
+
+data_prep = function(df, filtering, tr_means, tr_sd){
+  # df: N x P, train set or test set.
+  # threshold
+  df[df<100]=100
+  df[df>16000]=16000
+  
+  # filter
+  df = df[, filtering] 
+  
+  # log transformation
+  df = log10(df)
+  
+  # standardize, not normalize (paper2 appendix A)
+  df = scale(df, center = tr_means[filtering], scale = tr_sd[filtering])
+  
+  return(df)
+}
+
+prep_train = data_prep(golub_Ntrain_p, filter_idx, train_means, train_std_dev)
+prep_test = data_prep(golub_Ntest_p, filter_idx, train_means, train_std_dev)
+
+#save(prep_train, golub_Ntrain_r, prep_test, golub_Ntest_r, file = "./golub_prep1821.rda")
+
+cbind(train = dim(prep_train),test = dim(prep_test))
+```
+Note:  
+the number of features became 1821 after data preprocessing.  
+
+### 3.2 Data splitting  
+We initially kept the training set (the data collected initially) and the test set (an independent dataset collected at a different time) as the Golub study. Then, in Step 2.5, we moved 12 samples from the test set to the training set to address representation bias.
+```{r S32}
+# check matrix sizes & class distribution after data splitting
+rbind(Ntrain = dim(prep_train), Ntest = dim(prep_test))
+cbind(Ntrain = table(golub_Ntrain_r),Ntest = table(golub_Ntest_r))
+```
+
+
+# Step 4: Feature Selection  
+
+### 4.1 Identify KEY features  
+@Dobbin2008 discovered that in Golub’s experiment, 6 genes achieved an accuracy of 98%, compared to the >99% accuracy with 50 genes. For comparison, we fixed the sizes of the feature sets to be 6, 10, and 50.  
+
+```{r S4_1na, warning=FALSE, message=FALSE}
+# Neighborhood analysis
+
+## Note 16: signal-to-noise ratio/ correlation btw a gene & a class distinction
+get_p = function(train_d, train_r){
+    tr_m_aml =  colMeans(train_d[train_r == "AML",])
+    tr_sd_aml = apply(train_d[train_r == "AML",], 2, sd)
+    tr_m_all = colMeans(train_d[train_r == "ALL",])
+    tr_sd_all = apply(train_d[train_r == "ALL",], 2, sd)
+    p_vec = (tr_m_aml-tr_m_all)/(tr_sd_aml+tr_sd_all)
+    return(p_vec)
+}
+
+# Permutation test
+nna = matrix(0, 400, ncol(prep_train))
+set.seed(201702)
+for(i in 1:400){
+    c_star = sample(golub_Ntrain_r)
+    nna[i, ] = get_p(prep_train, c_star)
+}
+
+# significance level: 1%.
+nna_q = apply(nna, 2, quantile, prob = c(0.005, 0.995))
+p = get_p(prep_train, golub_Ntrain_r)
+
+#select the 1% sign lvl 
+index_1 = (1:ncol(prep_train))[p>=nna_q[2,] | p<=nna_q[1,]]
+prep_train = prep_train[, index_1]
+prep_test =prep_test[, index_1]
+p = p[index_1]
+
+train_m_aml = colMeans(prep_train[golub_Ntrain_r == "AML",])
+train_m_all = colMeans(prep_train[golub_Ntrain_r =="ALL",])
+
+cbind(train = dim(prep_train),test = dim(prep_test))
+```
+
+```{r 4_1genes, warning=FALSE, message=FALSE}
+# 50 genes
+cl_index50 = c(head(order(p), 25), head(order(p, decreasing = T), 25))
+b50 = (train_m_aml[cl_index50]+train_m_all[cl_index50])/2
+p_50 = p[cl_index50]
+
+prep_train50 = prep_train[, cl_index50]
+prep_test50 = prep_test[, cl_index50]
+#save(prep_train50, golub_Ntrain_r, prep_test50, golub_Ntest_r,b50, p_50, file = "./golub50gene.rda")
+
+# 10 genes
+cl_index10 = c(head(order(p), 5), head(order(p, decreasing = T), 5))
+b10 = (train_m_aml[cl_index10]+train_m_all[cl_index10])/2
+p_10 = p[cl_index10]
+
+prep_train10 = prep_train[, cl_index10]
+prep_test10 = prep_test[, cl_index10]
+#save(prep_train10, golub_Ntrain_r, prep_test10, golub_Ntest_r,b10, p_10, file = "./golub10gene.rda")
+
+# 6 genes
+cl_index6 = c(head(order(p), 3), head(order(p, decreasing = T), 3))
+b6 = (train_m_aml[cl_index6]+train_m_all[cl_index6])/2
+p_6 = p[cl_index6]
+
+prep_train6 = prep_train[, cl_index6]
+prep_test6 = prep_test[, cl_index6]
+#save(prep_train6, golub_Ntrain_r, prep_test6, golub_Ntest_r,b6, p_6, file = "./golub6gene.rda")
+```
+
+### 4.2 Assess the impact of features  
+Assessments should be done for all genes selected as predictors. For example, gene “M27891 at” is described as “CST3 Cystatin C (amyloid angiopathy and cerebral hemorrhage)”, it is related to the condition of kidneys, cerebrovascular disorder and bleeding in the brain [@Wang_Huang_2006].  
+
+### 4.3 Further attempts  
+(This section documents any exploratory or investigative attempts that are relevant to the overall analysis of the study, whether or not they yield useful or significant findings.)  
+
+For instance, we conducted Principle Components Analysis (PCA) to reduce the dimensions of gene data [@howley2005effect], with the aim of identifying trends, clusters, and outliers to improve interpretability.  
+However, the results were not ideal, as only the first three clusters explained 65% of the variance and there were a total of 50 clusters. Therefore, we did not elaborate or build on this result.  
+From Plot 2 and 3, we see there were two linearly separable clusters.  
+
+```{r 431_pca, message=FALSE, warning=FALSE}
+# https://stats.stackexchange.com/questions/72839/how-to-use-r-prcomp-results-for-prediction 
+pca = prcomp(prep_train50,  scale =TRUE)
+#str(pca)
+#summary(pca)
+fviz_screeplot(pca, addlabels=TRUE, choice = "variance",xlab="PC")
+
+# plot 2
+fviz_pca_ind(pca,
+             geom.ind = "point", 
+             col.ind = golub_Ntrain_r,
+             palette = c("#00AFBB", "#E7B800"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "class"
+             )
+# plot 3
+pc1 = pca$x[,1]
+pc2 = pca$x[,2]
+color = golub_Ntrain_r
+legends = levels(golub_Ntrain_r)
+
+plot(pc2 ~ pc1, pch=19,cex=0.8, col = color)
+legend("bottomright", legend = legends, col = c("red","black"),bty="n", text.col = c("red","black"))
+grid(col = "grey")
+
+# plot 4
+pca_Ntest = predict(pca, prep_test50)
+plot(pc2 ~ pc1,cex=0.8, col = color)
+color2 = golub_Ntest_r
+points(pca_Ntest, col = color2, pch=19)
+legend("bottomright", legend = legends, col = color2,bty="n", text.col = c("red","black"))
+legend("topright", legend=c("training set", "test set"), col=color2, pch=c(1, 19))
+grid(col = "grey")
+
+```
+
+
+# Step 5: Model Training  
+Before creating an algorithm from scratch, we should explore existing statistical learning methods to see if they are applicable. In the Golub study, the “weighted gene voting scheme” proposed was a variant of diagonal Linear Discriminant Analysis (LDA) [@Dudoit2002], and the separation measure resembles the calculation of t-statistic [@Li2001].  
+Since this is a high-dimensional data classification problem, our analysis of algorithm choice is simplified below:  
+
+1. KNN - not efficient due to the P>>N (the number of predictors way larger than the sample size), curse of dimensionality.  
+
+2. Naive Bayes - could try, but assumptions were violated; since a large number of genes highly correlated and the genes contributed differently [@Golub99].  
+
+3. SVM & variants of discriminant function - good starting points for such task [@Pappu_Pardalos_2014].  
+
+4. Tree-based methods (Random Forest) - we were interested in the feature importance.  
+
+5. Neural Networks - not practical due to the small sample sizes  [@Alwosheel_Cranenburgh_Chorus_2018].  
+
+Thus, our choice of algorithms narrow down to four: Naive Bayes, SVM, D-LDA and tree-based method.
+
+```{r 52_1original, warning=FALSE, message=FALSE}
+# Golub's method: note 19 & 20.
+vote_PS_cls = function(df_p, p_corr, b_g, true_cls){
+  
+  # the vote of gene g is Vg = a_g*(x_g-b_g)
+  vote = t(p_corr*t(sweep(df_p, 2, b_g)))
+  # sum up pos/neg votes
+  V_win = apply(vote, 1, function(x) sum(x[x>0]))
+  V_lose = abs(apply(vote, 1, function(x) sum(x[x<=0])))
+  
+  PS = (V_win - V_lose)/(V_win + V_lose)
+  pred_r = ifelse(abs(PS)>0.3, ifelse(PS>0, "AML", "ALL"), "Uncertain")
+  tble = table(Predict = pred_r, Actual = true_cls)
+  acc = round(sum(diag(tble))/sum(tble),3)
+  print(tble)
+  print(paste("The accuracy is:", acc, "with", ncol(df_p), "features."))
+  
+}
+
+vote_PS_cls(prep_train50, p_50, b50, golub_Ntrain_r)
+vote_PS_cls(prep_train10, p_10, b10, golub_Ntrain_r)
+vote_PS_cls(prep_train6,  p_6,  b6,  golub_Ntrain_r)
+```
+
+```{r 52_data_form, warning=FALSE, message=FALSE}
+# 50 genes
+df50 = data.frame(prep_train50)
+df50$cls = golub_Ntrain_r
+
+df50_test = data.frame(prep_test50)
+df50_test$cls = golub_Ntest_r
+
+# 10 genes
+df10 = data.frame(prep_train10)
+df10$cls = golub_Ntrain_r
+
+df10_test = data.frame(prep_test10)
+df10_test$cls = golub_Ntest_r
+
+# 6 genes
+df6 = data.frame(prep_train6)
+df6$cls = golub_Ntrain_r
+
+df6_test = data.frame(prep_test6)
+df6_test$cls = golub_Ntest_r
+```
+
+```{r 52_2NB, warning=FALSE, message=FALSE}
+# 50 genes
+nb50 = naiveBayes(cls ~., df50)
+pred50 = predict(nb50, prep_train50)
+tble50 = table(Predict = pred50, Actual = df50$cls);tble50
+# 10 genes
+nb10 = naiveBayes(cls ~., df10)
+pred10 = predict(nb10, prep_train10)
+tble10 = table(Predict = pred10, Actual = df10$cls);tble10
+# 6 genes
+nb6 = naiveBayes(cls ~., df6)
+pred6 = predict(nb6, prep_train6)
+tble6 = table(Predict = pred6, Actual = df6$cls);tble6
+```
+Note:  
+Naive Bayes achieved 100% classification accuracy on the training set with 50, 10, and 6 features respectively.  
+
+```{r 52_3svm, warning=FALSE, message=FALSE}
+# linear kernel
+# 50
+svm50 = svm(cls ~., df50)
+svm50_pred = predict(svm50, df50)
+svm_tb50 = table(Predict = svm50_pred, Actual = df50$cls);svm_tb50
+# 10
+svm10 = svm(cls ~., df10)
+svm10_pred = predict(svm10, df10)
+svm_tb10 = table(Predict = svm10_pred, Actual = df10$cls);svm_tb10
+# 6
+svm6 = svm(cls ~., df6)
+svm6_pred = predict(svm6, df6)
+svm_tb6 = table(Predict = svm6_pred, Actual = df6$cls);svm_tb6
+
+# quadratic kernel
+# 50
+svmq50 = svm(cls ~., df50, kernel = "polynomial", degree = 2,  gamma =0.01, coef0 = 100)
+svmq50_pred = predict(svmq50, df50)
+svmq_tb50 = table(Predict = svmq50_pred, Actual = df50$cls);svmq_tb50
+# 10
+svmq10 = svm(cls ~., df10, kernel = "polynomial", degree = 2,  gamma =0.01, coef0 = 100)
+svmq10_pred = predict(svmq10, df10)
+svmq_tb10 = table(Predict = svmq10_pred, Actual = df10$cls);svmq_tb10
+# 6
+svmq6 = svm(cls ~., df6, kernel = "polynomial", degree = 2,  gamma =0.01, coef0 = 100)
+svmq6_pred = predict(svmq6, df6)
+svmq_tb6 = table(Predict = svmq6_pred, Actual = df6$cls);svmq_tb6
+```
+Note:  
+SVM with linear kernel or quadratic kernel all achieved 100% classification accuracy on the training set with 50, 10, and 6 features respectively.  
+
+```{r 52_4DLDA, warning=FALSE, message=FALSE}
+# LDA w/ 50/10/6 features
+# lda50 = lda(cls~., df50)
+# Error in lda.default(x, grouping, ...) :   variables  3  8 10 20 27 38 39 46 47 appear to be constant within groups
+# R could not solve the matrix inverse because the within-class covariance matrix was singular; common LDA problem when P>>N.
+
+# DLDA -50
+dlda50 = lda_diag(cls~., df50)
+dlda50_pred = predict(dlda50, df50, type="class")
+dlda50_tb = table(Predict =dlda50_pred, Actual = df50$cls);dlda50_tb
+round(sum(diag(dlda50_tb))/sum(dlda50_tb),3)
+
+# DLDA - 10
+dlda10 = lda_diag(cls~., df10)
+dlda10_pred = predict(dlda10, df10, type="class")
+dlda10_tb = table(Predict =dlda10_pred, Actual = df10$cls);dlda10_tb
+round(sum(diag(dlda10_tb))/sum(dlda10_tb),3)
+
+# DLDA - 6
+dlda6 = lda_diag(cls~., df6)
+dlda6_pred = predict(dlda6, df6, type="class")
+dlda6_tb = table(Predict =dlda6_pred, Actual = df6$cls);dlda6_tb
+round(sum(diag(dlda6_tb))/sum(dlda6_tb),3)
+
+```
+Note:   
+Diagonal LDA achieved 98% (49/50), 98%, 100% classification accuracy on the training set with 50, 10, and 6 features respectively.  
+
+```{r 52_5RF, warning=FALSE, message=FALSE}
+set.seed(135)
+# 376
+df376 = data.frame(prep_train)
+df376$cls = golub_Ntrain_r
+rf = randomForest(cls~., df376, ntree = 301)
+rf_pred = predict(rf, df376)
+rf_tb = table(Predict = rf_pred, Actual = df376$cls);rf_tb
+var_imp376 = importance(rf)
+#Conditional=True, adjusts for correlations between predictors.
+varImpPlot(rf, n.var=10, conditional=TRUE)
+
+# 50
+rf50 = randomForest(cls~., df50, ntree = 301)
+rf50_pred = predict(rf50, df50)
+rf50_tb = table(Predict =rf50_pred, Actual = df50$cls);rf50_tb
+var_imp50 = importance(rf50)
+varImpPlot(rf50, n.var=10, conditional=TRUE) # showed top 10
+# 10
+rf10 = randomForest(cls~., df10, ntree = 301)
+rf10_pred = predict(rf10, df10)
+rf10_tb = table(Predict =rf10_pred, Actual = df10$cls);rf10_tb
+varImpPlot(rf10, conditional=TRUE)
+# 6
+rf6 = randomForest(cls~., df6, ntree = 301)
+rf6_pred = predict(rf6, df6)
+rf6_tb = table(Predict =rf6_pred, Actual = df6$cls);rf6_tb
+varImpPlot(rf6, conditional=TRUE)
+
+```
+Note:  
+Random Forest achieved 100% classification accuracy on the training set with 50, 10, and 6 features respectively.  
+
+### 5.3 Further attempts  
+
+```{r 5_3, warning=FALSE, message=FALSE}
+
+idx376_50 = head(order(var_imp376, decreasing = T), 50)
+idx376_10 = idx376_50[1:10]
+idx376_6  = idx376_50[1:6]
+
+var376_50names = rownames(var_imp376)[idx376_50]
+var376_10names = var376_50names[1:10]
+var376_6names  = var376_50names[1:6]
+
+commonIn50 = intersect(var376_50names, colnames(prep_train50))
+length(commonIn50)
+commonIn10 = intersect(var376_10names, colnames(prep_train10))
+length(commonIn10)
+commonIn6 = intersect(var376_6names, colnames(prep_train6))
+length(commonIn6)
+
+```
+The two algorithms picked features with 60-70% overlapped.  
+The features with the "highest importance" are not necessarily the "most informative" ones.
+
+# Step 6: Model Evaluation  
+
+### 6.1 Evaluation on the training set  
+We evaluate the training data using all viable algorithms selected in Step 5, comparing their performance through accuracy and confusion tables. Naturally, higher accuracy indicates better performance, but we also favor simpler models with strong predictive power.  
+
+### 6.2 Evaluation on the test set  
+ We applied the same preprocessing steps on the test set based on the results from the training set: thresholding, filtering, log transformation and standardization. Then, we evaluated the model performance on the independent test set. 
+
+```{r 6_1, warning=FALSE, message=FALSE}
+vote_PS_cls(prep_test50, p_50, b50, golub_Ntest_r)
+vote_PS_cls(prep_test10, p_10, b10, golub_Ntest_r)
+vote_PS_cls(prep_test6,  p_6,  b6,  golub_Ntest_r)
+```
+
+```{r 6_2NB, warning=FALSE, message=FALSE}
+# 50
+pred50_test = predict(nb50, prep_test50)
+tble50_test = table(Predict = pred50_test, Actual = golub_Ntest_r);tble50_test
+
+# 10
+pred10_test = predict(nb10, prep_test10)
+tble10_test = table(Predict = pred10_test, Actual = golub_Ntest_r);tble10_test
+
+# 6
+pred6_test = predict(nb6, prep_test6)
+tble6_test = table(Predict = pred6_test, Actual = golub_Ntest_r);tble6_test
+```
+Note:  
+Naive Bayes achieved 100% classification accuracy on the test set with 50, 10, and 6 features respectively.  
+
+```{r 6_3svm, warning=FALSE, message=FALSE}
+# linear kernel ------------
+# 50
+svm50_pred_test = predict(svm50, df50_test)
+svm_tb50_test = table(Predict = svm50_pred_test, Actual = df50_test$cls);svm_tb50_test
+# 10
+svm10_pred_test = predict(svm10, df10_test)
+svm_tb10_test = table(Predict = svm10_pred_test, Actual = df10_test$cls);svm_tb10_test
+# 6
+svm6_pred_test = predict(svm6, df6_test)
+svm_tb6_test = table(Predict = svm6_pred_test, Actual = df6_test$cls);svm_tb6_test
+ 
+# quadratic kernel -------------
+# 50
+svmq50_pred_test = predict(svmq50, df50_test)
+svmq_tb50_test = table(Predict = svmq50_pred_test, Actual = df50_test$cls);svmq_tb50_test
+# 10
+svmq10_pred_test = predict(svmq10, df10_test)
+svmq_tb10_test = table(Predict = svmq10_pred_test, Actual = df10_test$cls);svmq_tb10_test
+round(sum(diag(svmq_tb10_test))/sum(svmq_tb10_test),3)
+# 6
+svmq6_pred_test = predict(svmq6, df6_test)
+svmq_tb6_test = table(Predict = svmq6_pred_test, Actual = df6_test$cls);svmq_tb6_test
+round(sum(diag(svmq_tb6_test))/sum(svmq_tb6_test),3)
+```
+Note:   
+SVM with linear kernel achieved 100% classification accuracy on the test set with 50, 10, and 6 features respectively.  
+
+SVM with quadratic kernel achieved 100%, 95.5% (21/22) and 95.5% classification accuracy on the test set with 50, 10, and 6 features respectively.  
+
+```{r 6_4DLDA, warning=FALSE, message=FALSE}
+# DLDA -50
+dlda50_test_pred = predict(dlda50, df50_test, type="class")
+dlda50_test_tb = table(Predict =dlda50_test_pred, Actual = df50_test$cls);dlda50_test_tb
+
+# DLDA - 10
+dlda10_test_pred = predict(dlda10, df10_test, type="class")
+dlda10_test_tb = table(Predict =dlda10_test_pred, Actual = df10_test$cls);dlda10_test_tb
+
+# DLDA - 6
+dlda6_test_pred = predict(dlda6, df6_test, type="class")
+dlda6_test_tb = table(Predict =dlda6_test_pred, Actual = df6_test$cls);dlda6_test_tb
+```
+Note:  
+Diagonal LDA achieved 100% classification accuracy on the test set with 50, 10, and 6 features respectively.  
+
+```{r 6_5RF, warning=FALSE, message=FALSE}
+# 50
+rf50_pred_test = predict(rf50, df50_test)
+rf50_tb_test = table(Predict=rf50_pred_test, Actual = df50_test$cls);rf50_tb_test
+# 10
+rf10_pred_test = predict(rf10, df10_test)
+rf10_tb_test = table(Predict=rf10_pred_test, Actual = df10_test$cls);rf10_tb_test
+# 6
+rf6_pred_test = predict(rf6, df6_test)
+rf6_tb_test = table(Predict=rf6_pred_test, Actual = df6_test$cls);rf6_tb_test
+```
+Note:  
+Random forest achieved 100% classification accuracy on the test set with 50, 10, and 6 features respectively.  
+
+# Step 7: Preservation  
+
+### 7.1 Perserve non-optimal implementations  
+We kept the code and model results when experimenting with different sets of predictors and various algorithms, as well as PCA and its relevant visualizations.  
+
+### 7.2 Register the code  
+One can "archive a GitHub repository in the Zenodo data repository" [@fenner2018doi]. An example for this work [here](https://github.com/Machine-Learning-Pipelines/IdealMachineLearningPipeline).  
+
+### 7.3 Data management plan  
+We followed the new Policy of National Institutes of Health (NIH) for Data Management and Sharing [@Lippincott_2023]:  
+
+### 7.3.1 Data products  
+Types of data generated:  
+1, The data matrix of gene expressions after processing is 1821 predictors by 50 samples for the training set; 1821 predictors by 22 samples for the test set.  
+
+2, Confusion tables and accuracy accompanied by each model on training sets and test sets with three different sets of predictors.   
+
+### 7.3.2 Metadata  
+For example, the description of the covariate list, available in the golubEsets package [@golubEsets].  
+```{r 731, warning=FALSE, message=FALSE}
+Golub_Train@phenoData@varMetadata
+```
+
+### 7.3.3 Data Sharing & Archiving  
+The original data set are available in the package **golubEsets** by @golubEsets.  
+The data after processing is available on [Zenodo](https://zenodo.org/record/8123245).  
+
+### 7.3.4 Data Licensing  
+LGPL (GNU Lesser General Public License) for the Golub data and the derived data in this paper [@Stodden_2009].  
+
+### 7.4 Specify author contributions
+List each researchers' contribution to the paper, for example, according to [CRediT](https://credit.niso.org/) (Contributor Roles Taxonomy).  
+
+
+# Reference  
+
+<div id="refs"></div>
+
+# Dependencies  
+```{r session, echo=FALSE}
+sessionInfo()
+```
+
+# Acknowledgment  
+Some of the code for Golub's original experiment adapted from [@Stodden_Wu_Sochat_2018].  
+
